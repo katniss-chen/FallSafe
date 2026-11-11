@@ -1,396 +1,160 @@
-
-import streamlit as st
-from datetime import datetime
-
-st.set_page_config(
-    page_title="FallSafe",
-    page_icon="🏥",
-    layout="wide"
-)
-
-# -----------------------------------------
-# Fictional patient data
-# -----------------------------------------
-
-PATIENTS = {
-    "P001": {"age": 78, "unit": "Geriatrics"},
-    "P002": {"age": 45, "unit": "Medical-Surgical"},
-    "P003": {"age": 69, "unit": "Orthopedics"}
-}
-
-RISK_FACTORS = {
-    "previous_fall": "History of falls",
-    "dizziness": "Dizziness or orthostatic symptoms",
-    "mobility": "Impaired mobility",
-    "medication": "Medication-related fall risk"
-}
-
-PREVENTION_ITEMS = {
-    "education": "Patient education completed",
-    "bed_alarm": "Bed alarm activated",
-    "signage": "Fall risk signage placed",
-    "call_light": "Call light within reach",
-    "bed_position": "Bed low and wheels locked",
-    "bed_rails": "Bed rails appropriately positioned",
-    "toileting": "Assisted toileting plan established"
-}
-
-STATUS_OPTIONS = [
-    "Pending",
-    "Completed",
-    "Not indicated"
-]
-
-
-# -----------------------------------------
-# Session data
-# -----------------------------------------
-
-if "records" not in st.session_state:
-    st.session_state.records = {
-        patient_id: {
-            "assessment": None,
-            "risk": "Not assessed",
-            "assessment_time": None,
-            "checklist": {
-                item: "Pending"
-                for item in PREVENTION_ITEMS
-            },
-            "checklist_time": None
-        }
-        for patient_id in PATIENTS
-    }
-
-
-def calculate_risk(assessment):
-    """
-    Educational demonstration only.
-    Not a validated clinical scoring system.
-    """
-    count = sum(assessment.values())
-
-    if count >= 2:
-        return "High"
-    elif count == 1:
-        return "Review required"
-    return "No selected factors"
-
-
-def show_risk_alert(record):
-    risk = record["risk"]
-
-    if risk == "Not assessed":
-        st.warning(
-            "Assessment pending. Fall risk is unknown. "
-            "Complete the assessment and follow interim "
-            "safety precautions."
-        )
-
-    elif risk == "High":
-        st.error(
-            "HIGH FALL RISK - Prevention review required."
-        )
-
-    elif risk == "Review required":
-        st.warning(
-            "Fall risk factor identified. "
-            "Further nursing review required."
-        )
-
+        st.warning('Assessment pending — fall risk unknown. Follow interim precautions.')
+    elif risk == 'High':
+        st.error('HIGH FALL RISK — Prevention review required.')
+    elif risk == 'Review required':
+        st.warning('Fall risk factor identified — further nursing review required.')
     else:
-        st.info(
-            "No selected risk factors. "
-            "This does not establish low fall risk."
-        )
+        st.info('No selected factors. This does not establish low fall risk.')
 
+def task_counts(record):
+    return {s: sum(t['status'] == s for t in record['tasks'].values()) for s in STATUS_OPTIONS}
 
-# -----------------------------------------
-# Header and navigation
-# -----------------------------------------
+def save_task(record, key, new_status, new_owner, reason=''):
+    task = record['tasks'][key]
+    old_status, old_owner = task['status'], task['owner']
+    if new_owner != old_owner:
+        task['owner'] = new_owner
+        task['assigned_at'] = now() if new_owner != 'Unassigned' else None
+        task['acknowledged_at'] = None
+        task['escalated_at'] = None
+        event(record, 'Task assigned', key, f'{old_owner} → {new_owner}')
+    if new_status != old_status:
+        task['status'] = new_status
+        task['completed_at'] = now() if new_status == 'Completed' else None
+        task['not_indicated_reason'] = reason if new_status == 'Not indicated' else ''
+        if new_status != 'Pending':
+            task['escalated_at'] = None
+        if new_status == 'Pending':
+            task['acknowledged_at'] = None
+        event(record, 'Task status changed', key, f'{old_status} → {new_status}')
+    elif new_status == 'Not indicated' and reason != task['not_indicated_reason']:
+        task['not_indicated_reason'] = reason
+        event(record, 'Not-indicated rationale updated', key, reason)
+    task['updated_at'] = now()
+    # Clear cached checklist widgets so cross-page updates are visible.
+    if page != 'Prevention Checklist':
+        st.session_state.pop(f'check_{patient_id}_{key}', None)
+        st.session_state.pop(f'reason_{patient_id}_{key}', None)
 
-st.title("🏥 FallSafe")
-st.caption(
-    "Clinical Fall Prevention & Nursing Workflow"
-)
-
-st.warning(
-    "Educational prototype. Fictional patient data only. "
-    "Not a validated clinical tool or real EHR."
-)
-
-page = st.sidebar.radio(
-    "Navigation",
-    [
-        "Patient Assessment",
-        "Fall Risk Alerts",
-        "Prevention Checklist",
-        "Nursing Handoff",
-        "Quality Dashboard"
-    ]
-)
-
-patient_id = st.sidebar.selectbox(
-    "Select patient",
-    list(PATIENTS.keys())
-)
-
+st.title('🏥 FallSafe')
+st.caption('Clinical Fall Prevention & Nursing Workflow | Portfolio Prototype')
+st.warning('Educational simulation with fictional patients. Not a validated fall-risk tool, real EHR, or clinical alerting service.')
+page = st.sidebar.radio('Navigation', ['Patient Assessment', 'Fall Risk Alerts', 'Prevention Checklist', 'Nursing Handoff', 'Quality Dashboard'])
+patient_id = st.sidebar.selectbox('Select patient', list(PATIENTS))
 patient = PATIENTS[patient_id]
 record = st.session_state.records[patient_id]
-
-st.sidebar.divider()
-st.sidebar.write(f"**Age:** {patient['age']}")
-st.sidebar.write(f"**Unit:** {patient['unit']}")
+st.sidebar.write(f"**Age:** {patient['age']} | **Unit:** {patient['unit']}")
 st.sidebar.write(f"**Risk:** {record['risk']}")
-
 st.divider()
 
-
-# -----------------------------------------
-# Page 1: Patient Assessment
-# -----------------------------------------
-
-if page == "Patient Assessment":
-
-    st.header("Patient Fall Risk Assessment")
-
-    col1, col2 = st.columns(2)
-    col1.metric("Patient Age", patient["age"])
-    col2.metric("Hospital Unit", patient["unit"])
-
-    show_risk_alert(record)
-
-    st.subheader("Fall Risk Factors")
-
-    previous = record["assessment"] or {}
-
-    with st.form(f"assessment_form_{patient_id}"):
-
-        answers = {}
-
-        for factor, label in RISK_FACTORS.items():
-            answers[factor] = st.checkbox(
-                label,
-                value=previous.get(factor, False)
-            )
-
-        submitted = st.form_submit_button(
-            "Save Assessment",
-            type="primary"
-        )
-
+if page == 'Patient Assessment':
+    st.header('Patient Fall Risk Assessment')
+    a, b = st.columns(2)
+    a.metric('Patient Age', patient['age'])
+    b.metric('Hospital Unit', patient['unit'])
+    risk_alert(record)
+    with st.form(f'assessment_{patient_id}'):
+        previous = record['assessment'] or {}
+        answers = {k: st.checkbox(label, value=previous.get(k, False)) for k, label in RISK_FACTORS.items()}
+        submitted = st.form_submit_button('Save Assessment', type='primary')
     if submitted:
-        old_assessment = record["assessment"]
+        changed = record['assessment'] != answers
+        record['assessment'] = answers.copy()
+        record['risk'] = risk_of(answers)
+        record['assessment_time'] = now()
+        event(record, 'Assessment saved', details=f"Risk: {record['risk']}")
+        if changed:
+            for key, task in record['tasks'].items():
+                if task['status'] != 'Pending':
+                    event(record, 'Task requires re-review', key, 'Assessment changed')
+                task.update(new_task())
+        st.success('Assessment saved for this browser session.')
+        risk_alert(record)
+    if record['assessment_time']:
+        st.caption('Last assessment: ' + record['assessment_time'])
+    st.info('Four-factor rule is for demonstration only, not a validated clinical scoring system.')
 
-        record["assessment"] = answers.copy()
-        record["risk"] = calculate_risk(answers)
-        record["assessment_time"] = (
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        )
-
-        if old_assessment != answers:
-            record["checklist"] = {
-                item: "Pending"
-                for item in PREVENTION_ITEMS
-            }
-            record["checklist_time"] = None
-
-        st.success("Assessment saved for this demo session.")
-        show_risk_alert(record)
-
-    if record["assessment_time"]:
-        st.caption(
-            "Last assessment: "
-            + record["assessment_time"]
-        )
-
-    st.info(
-        "This simplified four-factor rule is for "
-        "demonstration only. A real hospital must use "
-        "approved assessment criteria and nursing judgment."
-    )
-
-
-# -----------------------------------------
-# Page 2: Clinical Alerts
-# -----------------------------------------
-
-elif page == "Fall Risk Alerts":
-
-    st.header("Clinical Decision Support Alerts")
-
-    st.subheader(f"Patient {patient_id}")
-    show_risk_alert(record)
-
-    if record["assessment"] is None:
-        st.error(
-            "Action required: Initial fall risk "
-            "assessment has not been completed."
-        )
-
+elif page == 'Fall Risk Alerts':
+    st.header('Clinical Decision Support Alerts')
+    risk_alert(record)
+    if record['assessment'] is None:
+        st.error('Action required: Initial fall risk assessment is incomplete.')
     else:
-        st.write("### Identified Risk Factors")
-
-        factors = [
-            label
-            for factor, label in RISK_FACTORS.items()
-            if record["assessment"].get(factor, False)
-        ]
-
-        if factors:
-            for factor in factors:
-                st.write(f"- {factor}")
-        else:
-            st.write("No selected factors documented.")
-
-    st.divider()
-    st.subheader("Prevention Task Status")
-
-    checklist = record["checklist"]
-
-    pending = sum(
-        status == "Pending"
-        for status in checklist.values()
-    )
-
-    completed = sum(
-        status == "Completed"
-        for status in checklist.values()
-    )
-
-    col1, col2 = st.columns(2)
-    col1.metric("Completed", completed)
-    col2.metric("Pending", pending)
-
-    if pending > 0:
-        st.warning(
-            f"{pending} prevention tasks are still pending."
-        )
+        st.subheader('Identified Risk Factors')
+        factors = [label for k, label in RISK_FACTORS.items() if record['assessment'].get(k)]
+        st.write(', '.join(factors) if factors else 'No selected factors documented.')
+    counts = task_counts(record)
+    a, b, c = st.columns(3)
+    a.metric('Completed', counts['Completed'])
+    b.metric('Pending', counts['Pending'])
+    c.metric('Not indicated', counts['Not indicated'])
+    if counts['Pending']:
+        st.warning(f"{counts['Pending']} prevention tasks remain pending.")
     else:
-        st.success(
-            "All checklist items have been reviewed."
-        )
+        st.success('All prevention items reviewed; risk designation remains unchanged.')
+    unowned = [PREVENTION_ITEMS[k] for k, t in record['tasks'].items() if t['status'] == 'Pending' and t['owner'] == 'Unassigned']
+    if unowned:
+        st.info(f'{len(unowned)} pending tasks have no assigned owner. Review Nursing Handoff.')
 
-    st.caption(
-        "Checklist completion does not remove "
-        "a patient's fall risk designation."
-    )
-
-
-# -----------------------------------------
-# Page 3: Prevention Checklist
-# -----------------------------------------
-
-elif page == "Prevention Checklist":
-
-    st.header("Electronic Fall Prevention Checklist")
-
-    st.write(f"**Patient:** {patient_id}")
-    show_risk_alert(record)
-
-    if record["assessment"] is None:
-        st.warning(
-            "Fall risk assessment is incomplete. "
-            "Do not interpret this as low risk."
-        )
-
-    st.write(
-        "Confirm the appropriate bedside prevention "
-        "measures. Select 'Not indicated' only when "
-        "clinically appropriate."
-    )
-
-    with st.form(f"checklist_form_{patient_id}"):
-
-        responses = {}
-
-        for item, label in PREVENTION_ITEMS.items():
-
-            responses[item] = st.selectbox(
-                label,
-                STATUS_OPTIONS,
-                index=STATUS_OPTIONS.index(
-                    record["checklist"][item]
-                ),
-                key=f"check_{patient_id}_{item}"
-            )
-
-        saved = st.form_submit_button(
-            "Save Prevention Checklist",
-            type="primary"
-        )
-
+elif page == 'Prevention Checklist':
+    st.header('Electronic Fall Prevention Checklist')
+    risk_alert(record)
+    if record['assessment'] is None:
+        st.warning('Assessment incomplete. Do not interpret this as low risk.')
+    st.caption('Save statuses here; Nursing Handoff reads the same tasks. Not indicated requires a reason.')
+    with st.form(f'checklist_{patient_id}'):
+        choices = {}
+        reasons = {}
+        for key, label in PREVENTION_ITEMS.items():
+            task = record['tasks'][key]
+            choices[key] = st.selectbox(label, STATUS_OPTIONS, index=STATUS_OPTIONS.index(task['status']), key=f'check_{patient_id}_{key}')
+            reasons[key] = st.text_input('Reason if not indicated', value=task['not_indicated_reason'], key=f'reason_{patient_id}_{key}') if choices[key] == 'Not indicated' else ''
+        saved = st.form_submit_button('Save Prevention Checklist', type='primary')
     if saved:
-        record["checklist"] = responses.copy()
-        record["checklist_time"] = (
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        )
-        st.success("Checklist saved for this demo session.")
+        missing = [PREVENTION_ITEMS[k] for k in PREVENTION_ITEMS if choices[k] == 'Not indicated' and not reasons[k].strip()]
+        if missing:
+            st.error('Provide a reason for each Not indicated item: ' + ', '.join(missing))
+        else:
+            for key in PREVENTION_ITEMS:
+                task = record['tasks'][key]
+                save_task(record, key, choices[key], task['owner'], reasons[key].strip())
+            st.success('Checklist saved. Handoff and alerts now reflect these statuses.')
+    counts = task_counts(record)
+    a, b, c = st.columns(3)
+    a.metric('Completed', counts['Completed'])
+    b.metric('Pending', counts['Pending'])
+    c.metric('Not indicated', counts['Not indicated'])
+    st.progress((counts['Completed'] + counts['Not indicated']) / len(PREVENTION_ITEMS))
+    st.info('A recorded checkbox is not proof of bedside execution. Bed alarms, signage, and rails depend on assessment and local policy.')
 
-    statuses = record["checklist"]
-
-    completed = sum(
-        value == "Completed"
-        for value in statuses.values()
-    )
-
-    pending = sum(
-        value == "Pending"
-        for value in statuses.values()
-    )
-
-    not_indicated = sum(
-        value == "Not indicated"
-        for value in statuses.values()
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Completed", completed)
-    col2.metric("Pending", pending)
-    col3.metric("Not indicated", not_indicated)
-
-    st.progress(
-        (completed + not_indicated) /
-        len(PREVENTION_ITEMS)
-    )
-
-    if pending > 0:
-        st.warning(
-            f"{pending} items remain pending. "
-            "Follow up according to clinical urgency."
-        )
-    else:
-        st.success("Checklist review documented.")
-
-    st.info(
-        "Documentation is not proof of bedside execution. "
-        "Bed alarms and bed rails must be used according "
-        "to patient assessment and hospital policy."
-    )
-
-    if record["checklist_time"]:
-        st.caption(
-            "Last checklist update: "
-            + record["checklist_time"]
-        )
-
-
-# -----------------------------------------
-# Pages to develop next
-# -----------------------------------------
-
-elif page == "Nursing Handoff":
-
-    st.header("Nursing Handoff")
-    st.info(
-        "Next phase: Task assignment, shift handoff, "
-        "acknowledgment, and escalation tracking."
-    )
-
-elif page == "Quality Dashboard":
-
-    st.header("Quality Dashboard")
-    st.info(
-        "Next phase: Fall prevention compliance "
-        "and patient safety analytics."
-    )
+elif page == 'Nursing Handoff':
+    st.header('Nursing Handoff & Task Accountability')
+    risk_alert(record)
+    counts = task_counts(record)
+    a, b, c = st.columns(3)
+    a.metric('Pending', counts['Pending'])
+    b.metric('Completed', counts['Completed'])
+    c.metric('Not indicated', counts['Not indicated'])
+    st.subheader('Assign and review prevention tasks')
+    for key, label in PREVENTION_ITEMS.items():
+        task = record['tasks'][key]
+        with st.expander(f"{label} · {task['status']} · {task['owner']}", expanded=task['status'] == 'Pending'):
+            st.write(f"**Acknowledged:** {task['acknowledged_at'] or 'No'}")
+            st.write(f"**Completed:** {task['completed_at'] or 'No'}")
+            with st.form(f'handoff_{patient_id}_{key}'):
+                owner = st.selectbox('Responsible person', OWNERS, index=OWNERS.index(task['owner']))
+                status = st.selectbox('Task status', STATUS_OPTIONS, index=STATUS_OPTIONS.index(task['status']))
+                reason = st.text_input('Reason if not indicated', value=task['not_indicated_reason']) if status == 'Not indicated' else ''
+                update = st.form_submit_button('Update assignment / status')
+            if update:
+                if status == 'Not indicated' and not reason.strip():
+                    st.error('Provide a reason for Not indicated.')
+                else:
+                    save_task(record, key, status, owner, reason.strip())
+                    st.success('Task updated. Other pages use this same record.')
+                    st.rerun()
+            if task['status'] == 'Pending' and task['owner'] != 'Unassigned':
+                if not task['acknowledged_at']:
+                    if st.button('Acknowledge task (demo)', key=f'ack_{patient_id}_{key}'):
+                        task['acknowledged_at'] = now()
+                        event(record, 'Task acknowledged', key, task['owner'])
