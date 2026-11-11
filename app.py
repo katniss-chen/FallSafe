@@ -1,99 +1,3 @@
-        st.warning('Assessment pending — fall risk unknown. Follow interim precautions.')
-    elif risk == 'High':
-        st.error('HIGH FALL RISK — Prevention review required.')
-    elif risk == 'Review required':
-        st.warning('Fall risk factor identified — further nursing review required.')
-    else:
-        st.info('No selected factors. This does not establish low fall risk.')
-
-def task_counts(record):
-    return {s: sum(t['status'] == s for t in record['tasks'].values()) for s in STATUS_OPTIONS}
-
-def save_task(record, key, new_status, new_owner, reason=''):
-    task = record['tasks'][key]
-    old_status, old_owner = task['status'], task['owner']
-    if new_owner != old_owner:
-        task['owner'] = new_owner
-        task['assigned_at'] = now() if new_owner != 'Unassigned' else None
-        task['acknowledged_at'] = None
-        task['escalated_at'] = None
-        event(record, 'Task assigned', key, f'{old_owner} → {new_owner}')
-    if new_status != old_status:
-        task['status'] = new_status
-        task['completed_at'] = now() if new_status == 'Completed' else None
-        task['not_indicated_reason'] = reason if new_status == 'Not indicated' else ''
-        if new_status != 'Pending':
-            task['escalated_at'] = None
-        if new_status == 'Pending':
-            task['acknowledged_at'] = None
-        event(record, 'Task status changed', key, f'{old_status} → {new_status}')
-    elif new_status == 'Not indicated' and reason != task['not_indicated_reason']:
-        task['not_indicated_reason'] = reason
-        event(record, 'Not-indicated rationale updated', key, reason)
-    task['updated_at'] = now()
-    # Clear cached checklist widgets so cross-page updates are visible.
-    if page != 'Prevention Checklist':
-        st.session_state.pop(f'check_{patient_id}_{key}', None)
-        st.session_state.pop(f'reason_{patient_id}_{key}', None)
-
-st.title('🏥 FallSafe')
-st.caption('Clinical Fall Prevention & Nursing Workflow | Portfolio Prototype')
-st.warning('Educational simulation with fictional patients. Not a validated fall-risk tool, real EHR, or clinical alerting service.')
-page = st.sidebar.radio('Navigation', ['Patient Assessment', 'Fall Risk Alerts', 'Prevention Checklist', 'Nursing Handoff', 'Quality Dashboard'])
-patient_id = st.sidebar.selectbox('Select patient', list(PATIENTS))
-patient = PATIENTS[patient_id]
-record = st.session_state.records[patient_id]
-st.sidebar.write(f"**Age:** {patient['age']} | **Unit:** {patient['unit']}")
-st.sidebar.write(f"**Risk:** {record['risk']}")
-st.divider()
-
-if page == 'Patient Assessment':
-    st.header('Patient Fall Risk Assessment')
-    a, b = st.columns(2)
-    a.metric('Patient Age', patient['age'])
-    b.metric('Hospital Unit', patient['unit'])
-    risk_alert(record)
-    with st.form(f'assessment_{patient_id}'):
-        previous = record['assessment'] or {}
-        answers = {k: st.checkbox(label, value=previous.get(k, False)) for k, label in RISK_FACTORS.items()}
-        submitted = st.form_submit_button('Save Assessment', type='primary')
-    if submitted:
-        changed = record['assessment'] != answers
-        record['assessment'] = answers.copy()
-        record['risk'] = risk_of(answers)
-        record['assessment_time'] = now()
-        event(record, 'Assessment saved', details=f"Risk: {record['risk']}")
-        if changed:
-            for key, task in record['tasks'].items():
-                if task['status'] != 'Pending':
-                    event(record, 'Task requires re-review', key, 'Assessment changed')
-                task.update(new_task())
-        st.success('Assessment saved for this browser session.')
-        risk_alert(record)
-    if record['assessment_time']:
-        st.caption('Last assessment: ' + record['assessment_time'])
-    st.info('Four-factor rule is for demonstration only, not a validated clinical scoring system.')
-
-elif page == 'Fall Risk Alerts':
-    st.header('Clinical Decision Support Alerts')
-    risk_alert(record)
-    if record['assessment'] is None:
-        st.error('Action required: Initial fall risk assessment is incomplete.')
-    else:
-        st.subheader('Identified Risk Factors')
-        factors = [label for k, label in RISK_FACTORS.items() if record['assessment'].get(k)]
-        st.write(', '.join(factors) if factors else 'No selected factors documented.')
-    counts = task_counts(record)
-    a, b, c = st.columns(3)
-    a.metric('Completed', counts['Completed'])
-    b.metric('Pending', counts['Pending'])
-    c.metric('Not indicated', counts['Not indicated'])
-    if counts['Pending']:
-        st.warning(f"{counts['Pending']} prevention tasks remain pending.")
-    else:
-        st.success('All prevention items reviewed; risk designation remains unchanged.')
-    unowned = [PREVENTION_ITEMS[k] for k, t in record['tasks'].items() if t['status'] == 'Pending' and t['owner'] == 'Unassigned']
-    if unowned:
         st.info(f'{len(unowned)} pending tasks have no assigned owner. Review Nursing Handoff.')
 
 elif page == 'Prevention Checklist':
@@ -158,3 +62,48 @@ elif page == 'Nursing Handoff':
                     if st.button('Acknowledge task (demo)', key=f'ack_{patient_id}_{key}'):
                         task['acknowledged_at'] = now()
                         event(record, 'Task acknowledged', key, task['owner'])
+                        st.rerun()
+                else:
+                    st.info('Acknowledged does not mean completed.')
+    st.divider()
+    st.subheader('Escalation simulation')
+    st.caption('30 minutes is an illustrative timer for nonurgent, unacknowledged tasks only. Immediate hazards require immediate human action.')
+    minutes = st.slider('Simulated minutes since last assignment', 0, 90, 0, 5)
+    pending_unack = [(key, task) for key, task in record['tasks'].items() if task['status'] == 'Pending' and task['acknowledged_at'] is None]
+    if minutes >= 30 and pending_unack:
+        st.error(f'{len(pending_unack)} unacknowledged pending task(s) meet the simulated escalation threshold. Notify charge nurse.')
+        if st.button('Record simulated escalation to charge nurse'):
+            for key, task in pending_unack:
+                task['escalated_at'] = now()
+                event(record, 'Escalation simulated', key, 'Charge nurse; no real message sent')
+            st.success('Escalation recorded in this demo session. No external notification sent.')
+    elif pending_unack:
+        st.warning(f'{len(pending_unack)} pending task(s) not acknowledged. Escalation threshold not reached in simulation.')
+    else:
+        st.success('No pending unacknowledged tasks.')
+    st.divider()
+    st.subheader('Shift handoff summary')
+    for key, task in record['tasks'].items():
+        st.write(f"**{PREVENTION_ITEMS[key]}:** {task['status']} | Owner: {task['owner']} | Ack: {'Yes' if task['acknowledged_at'] else 'No'}")
+    st.subheader('Audit trail (current browser session)')
+    if record['events']:
+        st.dataframe(list(reversed(record['events'])), use_container_width=True, hide_index=True)
+    else:
+        st.info('No recorded activity yet.')
+
+elif page == 'Quality Dashboard':
+    st.header('Quality Dashboard')
+    st.info('Next phase: quality measures, simulated incident trends, and patient-day-adjusted fall rates.')
+    rows = []
+    for pid, rec in st.session_state.records.items():
+        counts = task_counts(rec)
+        rows.append({'Patient': pid, 'Unit': PATIENTS[pid]['unit'], 'Risk': rec['risk'], **counts})
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+st.sidebar.divider()
+if st.sidebar.button('Reset all fictional demo data'):
+    st.session_state.records = {pid: new_record() for pid in PATIENTS}
+    for key in list(st.session_state.keys()):
+        if key.startswith(('check_', 'reason_')):
+            del st.session_state[key]
+    st.rerun()
