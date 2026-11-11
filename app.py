@@ -213,8 +213,17 @@ elif page == 'Nursing Handoff':
         st.success('No pending unacknowledged tasks.')
     st.divider()
     st.subheader('Shift handoff summary')
-    for key, task in record['tasks'].items():
-        st.write(f"**{PREVENTION_ITEMS[key]}:** {task['status']} | Owner: {task['owner']} | Ack: {'Yes' if task['acknowledged_at'] else 'No'}")
+    handoff_rows = [
+        {
+            'Prevention task': PREVENTION_ITEMS[key],
+            'Status': task['status'],
+            'Owner': task['owner'],
+            'Acknowledged': 'Yes' if task['acknowledged_at'] else 'No',
+            'Completed at': task['completed_at'] or '—',
+        }
+        for key, task in record['tasks'].items()
+    ]
+    st.dataframe(pd.DataFrame(handoff_rows), use_container_width=True, hide_index=True)
     st.subheader('Audit trail (current browser session)')
     if record['events']:
         st.dataframe(list(reversed(record['events'])), use_container_width=True, hide_index=True)
