@@ -1,4 +1,6 @@
 import streamlit as st
+import pandas as pd
+import plotly.express as px
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title='FallSafe', page_icon='🏥', layout='wide')
@@ -220,13 +222,89 @@ elif page == 'Nursing Handoff':
         st.info('No recorded activity yet.')
 
 elif page == 'Quality Dashboard':
-    st.header('Quality Dashboard')
-    st.info('Next phase: quality measures, simulated incident trends, and patient-day-adjusted fall rates.')
-    rows = []
-    for pid, rec in st.session_state.records.items():
-        counts = task_counts(rec)
-        rows.append({'Patient': pid, 'Unit': PATIENTS[pid]['unit'], 'Risk': rec['risk'], **counts})
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.header('Quality & Patient Safety Dashboard')
+    st.caption('Live workflow metrics come from fictional patient records in this browser session. Fall events and patient-days below are a separate, illustrative dataset.')
+
+    records = st.session_state.records
+    total_patients = len(records)
+    assessed = sum(rec['assessment'] is not None for rec in records.values())
+    high_risk = sum(rec['risk'] == 'High' for rec in records.values())
+    all_tasks = [task for rec in records.values() for task in rec['tasks'].values()]
+    completed = sum(task['status'] == 'Completed' for task in all_tasks)
+    pending = sum(task['status'] == 'Pending' for task in all_tasks)
+    not_indicated = sum(task['status'] == 'Not indicated' for task in all_tasks)
+    reviewed = completed + not_indicated
+    task_total = len(all_tasks)
+    assessment_rate = 100 * assessed / total_patients if total_patients else 0
+    review_rate = 100 * reviewed / task_total if task_total else 0
+
+    st.subheader('Current demo-session workflow measures')
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric('Assessment completion', f'{assessment_rate:.0f}%', f'{assessed}/{total_patients} patients', delta_color='off')
+    c2.metric('Checklist items reviewed', f'{review_rate:.0f}%', f'{reviewed}/{task_total} items', delta_color='off')
+    c3.metric('High-risk patients', high_risk)
+    c4.metric('Pending prevention tasks', pending)
+    st.caption('Checklist reviewed = Completed + Not indicated (with documented reason). It is not a measure of verified bedside adherence.')
+
+    st.subheader('Prevention task status')
+    status_df = pd.DataFrame([
+        {'Status': 'Completed', 'Tasks': completed},
+        {'Status': 'Pending', 'Tasks': pending},
+        {'Status': 'Not indicated', 'Tasks': not_indicated},
+    ])
+    left, right = st.columns([1, 1])
+    with left:
+        fig = px.bar(status_df, x='Status', y='Tasks', text='Tasks', title='All fictional patients')
+        fig.update_layout(showlegend=False, yaxis_title='Number of tasks')
+        st.plotly_chart(fig, use_container_width=True)
+    with right:
+        rows = []
+        for pid, rec in records.items():
+            counts = task_counts(rec)
+            rows.append({
+                'Patient': pid,
+                'Unit': PATIENTS[pid]['unit'],
+                'Risk': rec['risk'],
+                'Assessment': 'Complete' if rec['assessment'] is not None else 'Pending',
+                'Completed': counts['Completed'],
+                'Pending': counts['Pending'],
+                'Not indicated': counts['Not indicated'],
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.subheader('Handoff accountability')
+    unassigned = sum(t['status'] == 'Pending' and t['owner'] == 'Unassigned' for t in all_tasks)
+    unacknowledged = sum(t['status'] == 'Pending' and not t['acknowledged_at'] for t in all_tasks)
+    escalated = sum(t['escalated_at'] is not None for t in all_tasks)
+    a, b, c = st.columns(3)
+    a.metric('Pending and unassigned', unassigned)
+    b.metric('Pending and unacknowledged', unacknowledged)
+    c.metric('Currently flagged as escalated', escalated)
+    st.caption('Acknowledged means accepted for follow-up, not completed. Escalations are simulated and do not send notifications.')
+
+    st.divider()
+    st.subheader('Illustrative fall incidence trend')
+    st.info('The monthly figures below are invented teaching data, NOT calculated from P001–P003 and NOT actual hospital outcomes.')
+    demo_months = pd.DataFrame({
+        'Month': ['Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+        'Falls': [5, 4, 6, 3, 4, 2],
+        'Patient-days': [1200, 1250, 1180, 1275, 1300, 1220],
+    })
+    demo_months['Falls per 1,000 patient-days'] = (
+        demo_months['Falls'] / demo_months['Patient-days'] * 1000
+    ).round(2)
+    trend = px.line(
+        demo_months, x='Month', y='Falls per 1,000 patient-days',
+        markers=True, title='Synthetic monthly fall rates'
+    )
+    st.plotly_chart(trend, use_container_width=True)
+    st.dataframe(demo_months, use_container_width=True, hide_index=True)
+    st.latex(r'\text{Fall rate} = \frac{\text{Number of falls}}{\text{Patient-days}} \times 1000')
+    st.caption('Synthetic rates are descriptive examples only. Six invented months cannot demonstrate that FallSafe reduces falls or establish a causal effect.')
+
+    st.subheader('Quality improvement interpretation')
+    st.write('Use assessment completion, unresolved tasks, handoff accountability, and fall incidence as separate signals. Review staffing, patient mix, workflow interruptions, and equipment availability before attributing any change in outcomes to an intervention.')
+    st.caption('Prototype limitations: in-memory session data; no authentication, persistent database, EHR integration, real alert delivery, or validated clinical risk scoring.')
 
 st.sidebar.divider()
 if st.sidebar.button('Reset all fictional demo data'):
