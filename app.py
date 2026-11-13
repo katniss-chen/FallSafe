@@ -1,6 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import json
+from pathlib import Path
+import joblib
+import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title='FallSafe', page_icon='🏥', layout='wide')
@@ -40,6 +44,29 @@ def risk_alert(record):
     else:
         st.info('No selected factors. This does not establish low fall risk.')
 
+# Workflow gap detection is rule-based, not the NHIS machine-learning model.
+def prevention_gaps(record):
+    if record['assessment'] is None:
+        return []
+    rows = []
+    for key, task in record['tasks'].items():
+        if task['status'] != 'Pending':
+            continue
+        issues = ['Pending action']
+        if task['owner'] == 'Unassigned':
+            issues.append('No owner assigned')
+        elif task['acknowledged_at'] is None:
+            issues.append('Not acknowledged')
+        rows.append({'Prevention measure': PREVENTION_ITEMS[key],
+                     'Owner': task['owner'], 'Gap': '; '.join(issues)})
+    return rows
+
+@st.cache_resource(show_spinner=False)
+def load_research_model(model_name):
+    path = Path(__file__).resolve().parent / 'models' / model_name
+    # Load only trusted model artifacts packaged with this project.
+    return joblib.load(path)
+
 def task_counts(record):
     return {s: sum(t['status'] == s for t in record['tasks'].values()) for s in STATUS_OPTIONS}
 
@@ -73,7 +100,7 @@ def save_task(record, key, new_status, new_owner, reason=''):
 st.title('🏥 FallSafe')
 st.caption('Clinical Fall Prevention & Nursing Workflow | Portfolio Prototype')
 st.warning('Educational simulation with fictional patients. Not a validated fall-risk tool, real EHR, or clinical alerting service.')
-page = st.sidebar.radio('Navigation', ['Patient Assessment', 'Fall Risk Alerts', 'Prevention Checklist', 'Nursing Handoff', 'Quality Dashboard'])
+page = st.sidebar.radio('Navigation', ['Patient Assessment', 'Fall Risk Alerts', 'Prevention Checklist', 'Nursing Handoff', 'Quality Dashboard', 'AI Research (NHIS 2023)'])
 patient_id = st.sidebar.selectbox('Select patient', list(PATIENTS))
 patient = PATIENTS[patient_id]
 record = st.session_state.records[patient_id]
@@ -129,6 +156,14 @@ elif page == 'Fall Risk Alerts':
     unowned = [PREVENTION_ITEMS[k] for k, t in record['tasks'].items() if t['status'] == 'Pending' and t['owner'] == 'Unassigned']
     if unowned:
         st.info(f'{len(unowned)} pending tasks have no assigned owner. Review Nursing Handoff.')
+    gaps = prevention_gaps(record)
+    st.subheader('Prevention Gap Detection (rule-based)')
+    if record['assessment'] is None:
+        st.info('Complete an assessment to review workflow gaps.')
+    elif gaps:
+        st.dataframe(pd.DataFrame(gaps), use_container_width=True, hide_index=True)
+    else:
+        st.success('No pending prevention gaps recorded in this session.')
 
 elif page == 'Prevention Checklist':
     st.header('Electronic Fall Prevention Checklist')
@@ -212,6 +247,13 @@ elif page == 'Nursing Handoff':
     else:
         st.success('No pending unacknowledged tasks.')
     st.divider()
+    st.subheader('Prevention gap handoff summary')
+    gaps = prevention_gaps(record)
+    if gaps:
+        st.warning(f'{len(gaps)} pending prevention actions need follow-up.')
+        st.dataframe(pd.DataFrame(gaps), use_container_width=True, hide_index=True)
+    else:
+        st.info('No pending prevention gaps detected (or assessment not yet completed).')
     st.subheader('Shift handoff summary')
     handoff_rows = [
         {
@@ -314,6 +356,51 @@ elif page == 'Quality Dashboard':
     st.subheader('Quality improvement interpretation')
     st.write('Use assessment completion, unresolved tasks, handoff accountability, and fall incidence as separate signals. Review staffing, patient mix, workflow interruptions, and equipment availability before attributing any change in outcomes to an intervention.')
     st.caption('Prototype limitations: in-memory session data; no authentication, persistent database, EHR integration, real alert delivery, or validated clinical risk scoring.')
+
+elif page == 'AI Research (NHIS 2023)':
+    st.header('AI Research | NHIS 2023 Fall-History Classification')
+    st.warning('Research demonstration only. This model classifies self-reported falls in the preceding 12 months in a US population survey. It is NOT a validated prediction of future inpatient falls and must not guide patient care.')
+    st.caption('Independent from the fictional P001–P003 nursing workflow. Inputs here are survey-style research examples, not patient EHR fields.')
+    report_path = Path(__file__).resolve().parent / 'models' / 'fallsafe_model_report.json'
+    try:
+        report = json.loads(report_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        st.error(f'Model evaluation report unavailable: {exc}')
+        st.stop()
+    st.subheader('Held-out test set performance (original 0.5 threshold)')
+    metrics = []
+    for name, values in report['results'].items():
+        metrics.append({'Model': name, 'ROC-AUC': values['roc_auc'], 'PR-AUC': values['pr_auc'],
+                        'Recall': values['recall_at_0_5'], 'Precision': values['precision_at_0_5'],
+                        'Accuracy': values['accuracy_at_0_5']})
+    st.dataframe(pd.DataFrame(metrics), use_container_width=True, hide_index=True)
+    st.caption('Metrics were calculated on an unweighted random 20% holdout from NHIS 2023. No external or prospective validation. Survey design/weights were not incorporated.')
+    st.subheader('Try the survey research model')
+    model_choice = st.selectbox('Model', ['Logistic Regression', 'Random Forest'])
+    age = st.slider('Age (years)', min_value=18, max_value=85, value=65)
+    sex = st.selectbox('Survey sex code (SEX_A)', [1, 2], format_func=lambda x: '1' if x == 1 else '2', help='Original NHIS coded variable. Interpret according to the official NHIS codebook.')
+    hearing = st.selectbox('HEARINGDF_A (survey code)', [1, 2, 3, 4])
+    vision = st.selectbox('VISIONDF_A (survey code)', [1, 2, 3, 4])
+    arthritis = st.selectbox('ARTHEV_A (survey code)', [1, 2])
+    hypertension = st.selectbox('HYPEV_A (survey code)', [1, 2])
+    st.caption('Codes are shown as numeric values to avoid guessing survey response labels. Refer to the CDC NHIS 2023 codebook before interpretation.')
+    if st.button('Run research classification', type='primary'):
+        name = 'fallsafe_logistic_regression.joblib' if model_choice == 'Logistic Regression' else 'fallsafe_random_forest.joblib'
+        try:
+            model = load_research_model(name)
+            row = pd.DataFrame([{'AGEP_A': age, 'SEX_A': sex, 'HEARINGDF_A': hearing,
+                                 'VISIONDF_A': vision, 'ARTHEV_A': arthritis, 'HYPEV_A': hypertension}])
+            for col in ['SEX_A', 'HEARINGDF_A', 'VISIONDF_A', 'ARTHEV_A', 'HYPEV_A']:
+                row[col] = row[col].astype('object')
+            score = float(model.predict_proba(row)[0, 1])
+            st.metric('Model score: reported fall history', f'{score:.1%}')
+            st.info('This is a statistical model output for a survey response, not a calibrated clinical fall-risk probability. No patient alert or prevention task is triggered.')
+        except Exception as exc:
+            st.error('Unable to load or run the research model. Confirm model files and compatible dependencies.')
+            st.caption(str(exc))
+    st.subheader('Research limitations')
+    st.write(report['limitations'])
+    st.write('The nursing workflow gap detector is rule-based and does not depend on this survey model.')
 
 st.sidebar.divider()
 if st.sidebar.button('Reset all fictional demo data'):
