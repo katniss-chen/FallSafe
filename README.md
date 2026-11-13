@@ -36,3 +36,7 @@ The `models/` folder includes two pre-trained scikit-learn pipelines and a JSON 
 - Load `.joblib` files only from trusted sources; deserialization can execute code.
 
 Source: [CDC NHIS 2023 documentation](https://www.cdc.gov/nchs/nhis/documentation/2023-nhis.html).
+
+## AI 2.1: Exploratory threshold analysis
+
+The AI Research page now compares recall, precision, F1 and error counts across several score thresholds on the **same** NHIS 2023 holdout. This is an educational, post-hoc comparison, **not** a validated threshold selection or an improvement in ROC-AUC. Do not select a threshold from this table and claim independent test performance. A future study should select thresholds on a separate validation set and evaluate once on a held-out test set. The model is for retrospective survey fall-history classification only.
